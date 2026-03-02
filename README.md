@@ -358,7 +358,7 @@ If your Linux distribution enforces strict Secure Boot policies, the kernel will
 
 To resolve this, you must sign the kernel module using a trusted Machine Owner Key (MOK) so your UEFI firmware allows it to load. 
 
-* **If you already have existing keys** (you will if you installed NVIDIA drivers): Configure DKMS to use your existing private key and public certificate before running `dkms install`. 
+* **If you already have existing keys** (you may already have a MOK/key pair, common if you previously set up Secure Boot module signing, e.g. for NVIDIA drivers): Configure DKMS to use your existing private key and public certificate before running `dkms install`. 
 * **If you do not have a MOK**: You will need to generate a key pair, enroll it in your firmware via `mokutil`, and script DKMS to use it. 
 
 For instructions and automated scripts to handle MOK generation and DKMS signing, see the [Community DKMS Signing Guide](https://gist.github.com/sbueringer/bd8cec239c44d66967cf307d808f10c4) or the [Arch Wiki DKMS Documentation](https://wiki.archlinux.org/title/Dynamic_Kernel_Module_Support#Secure_Boot).
