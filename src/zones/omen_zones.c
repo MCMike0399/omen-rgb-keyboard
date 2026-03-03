@@ -272,12 +272,12 @@ int fourzone_setup(struct platform_device *dev)
 	char buffer[10];
 	char *name;
 
-	zone_dev_attrs = kcalloc(ZONE_COUNT + 4, sizeof(struct device_attribute),
+	zone_dev_attrs = kcalloc(ZONE_COUNT + 5, sizeof(struct device_attribute),
 				 GFP_KERNEL);
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 6, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 7, sizeof(struct attribute *),
 			     GFP_KERNEL);
 	if (!zone_attrs)
 		return -ENOMEM;
@@ -325,8 +325,9 @@ int fourzone_setup(struct platform_device *dev)
 	zone_attrs[ZONE_COUNT + 1] = &animation_brightness_attr.attr;
 	zone_attrs[ZONE_COUNT + 2] = &animation_mode_attr.attr;
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
-	zone_attrs[ZONE_COUNT + 4] = &dev_attr_mute_led.attr;
-	zone_attrs[ZONE_COUNT + 5] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 4] = &gradient_config_attr.attr;
+	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
+	zone_attrs[ZONE_COUNT + 6] = NULL; /* NULL terminate the array */
 
 	zone_attribute_group.attrs = zone_attrs;
 	

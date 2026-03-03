@@ -27,6 +27,7 @@
 enum animation_mode current_animation = ANIMATION_STATIC;
 int animation_speed = ANIMATION_SPEED_DEFAULT;
 bool animation_active = false;
+struct gradient_config gradient_cfg;
 
 static struct timer_list animation_timer;
 static struct work_struct animation_work;
@@ -262,6 +263,51 @@ static void animation_disco(void)
 	update_all_zones_with_colors(colors);
 }
 
+static void animation_gradient(void)
+{
+	unsigned long elapsed = jiffies - animation_start_time;
+	unsigned long step_time = msecs_to_jiffies(3000 / animation_speed);
+	struct color_platform colors[ZONE_COUNT];
+	int g, z;
+
+	/* Start with current zone colors as fallback for ungrouped zones */
+	for (z = 0; z < ZONE_COUNT; z++)
+		colors[z] = original_colors[z].colors;
+
+	for (g = 0; g < gradient_cfg.group_count; g++) {
+		struct gradient_group *grp = &gradient_cfg.groups[g];
+		unsigned long total_cycle, cycle_pos, frac;
+		int idx_a, idx_b;
+		struct color_platform interpolated;
+
+		if (grp->color_count == 0)
+			continue;
+
+		/* Total cycle = time per color transition * number of colors */
+		total_cycle = step_time * grp->color_count;
+		cycle_pos = elapsed % total_cycle;
+
+		/* Which two colors are we interpolating between? */
+		idx_a = cycle_pos / step_time;
+		idx_b = (idx_a + 1) % grp->color_count;
+
+		/* Fractional position between color A and B (0 to step_time) */
+		frac = cycle_pos - (idx_a * step_time);
+
+		/* Linear interpolation using integer math */
+		interpolated.red   = grp->colors[idx_a].red   + (int)(grp->colors[idx_b].red   - grp->colors[idx_a].red)   * (int)frac / (int)step_time;
+		interpolated.green = grp->colors[idx_a].green + (int)(grp->colors[idx_b].green - grp->colors[idx_a].green) * (int)frac / (int)step_time;
+		interpolated.blue  = grp->colors[idx_a].blue  + (int)(grp->colors[idx_b].blue  - grp->colors[idx_a].blue)  * (int)frac / (int)step_time;
+
+		for (z = 0; z < ZONE_COUNT; z++) {
+			if (grp->zone_mask & (1 << z))
+				colors[z] = interpolated;
+		}
+	}
+
+	update_all_zones_with_colors(colors);
+}
+
 /* Animation work function - runs in work queue context */
 static void animation_work_func(struct work_struct *work)
 {
@@ -295,6 +341,9 @@ static void animation_work_func(struct work_struct *work)
 		break;
 	case ANIMATION_DISCO:
 		animation_disco();
+		break;
+	case ANIMATION_GRADIENT:
+		animation_gradient();
 		break;
 	default:
 		break;
@@ -354,7 +403,7 @@ static ssize_t animation_mode_show(struct device *dev, struct device_attribute *
 {
 	const char *mode_names[] = {
 		"static", "breathing", "rainbow", "wave", "pulse",
-		"chase", "sparkle", "candle", "aurora", "disco"
+		"chase", "sparkle", "candle", "aurora", "disco", "gradient"
 	};
 
 	if (current_animation >= ANIMATION_COUNT)
@@ -388,6 +437,8 @@ static ssize_t animation_mode_set(struct device *dev, struct device_attribute *a
 		new_mode = ANIMATION_AURORA;
 	} else if (strncmp(buf, "disco", 5) == 0) {
 		new_mode = ANIMATION_DISCO;
+	} else if (strncmp(buf, "gradient", 8) == 0) {
+		new_mode = ANIMATION_GRADIENT;
 	} else {
 		return -EINVAL;
 	}
@@ -438,6 +489,147 @@ static ssize_t animation_speed_set(struct device *dev, struct device_attribute *
 	return count;
 }
 
+static ssize_t gradient_config_show(struct device *dev, struct device_attribute *attr,
+				    char *buf)
+{
+	int g, z, c, len = 0;
+
+	for (g = 0; g < gradient_cfg.group_count; g++) {
+		struct gradient_group *grp = &gradient_cfg.groups[g];
+		bool first_zone = true;
+		bool first_color = true;
+
+		if (g > 0)
+			len += sprintf(buf + len, ";");
+
+		/* Print zones */
+		for (z = 0; z < ZONE_COUNT; z++) {
+			if (grp->zone_mask & (1 << z)) {
+				if (!first_zone)
+					len += sprintf(buf + len, ",");
+				len += sprintf(buf + len, "%d", z);
+				first_zone = false;
+			}
+		}
+
+		len += sprintf(buf + len, ":");
+
+		/* Print colors */
+		for (c = 0; c < grp->color_count; c++) {
+			if (!first_color)
+				len += sprintf(buf + len, ",");
+			len += sprintf(buf + len, "%02X%02X%02X",
+				       grp->colors[c].red,
+				       grp->colors[c].green,
+				       grp->colors[c].blue);
+			first_color = false;
+		}
+	}
+
+	len += sprintf(buf + len, "\n");
+	return len;
+}
+
+static ssize_t gradient_config_set(struct device *dev, struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct gradient_config new_cfg;
+	char local_buf[512];
+	char *group_str, *groups_ptr;
+	int g = 0;
+
+	memset(&new_cfg, 0, sizeof(new_cfg));
+
+	if (count >= sizeof(local_buf))
+		return -EINVAL;
+
+	memcpy(local_buf, buf, count);
+	local_buf[count] = '\0';
+
+	/* Strip trailing newline */
+	if (local_buf[count - 1] == '\n')
+		local_buf[count - 1] = '\0';
+
+	groups_ptr = local_buf;
+
+	/* Parse groups separated by ';' */
+	while ((group_str = strsep(&groups_ptr, ";")) != NULL) {
+		char *zones_str, *colors_str, *token;
+		char *zones_ptr, *colors_ptr;
+		struct gradient_group *grp;
+
+		if (*group_str == '\0')
+			continue;
+
+		if (g >= GRADIENT_MAX_GROUPS)
+			return -EINVAL;
+
+		grp = &new_cfg.groups[g];
+
+		/* Split on ':' to get zones and colors */
+		zones_str = strsep(&group_str, ":");
+		colors_str = group_str;
+
+		if (!zones_str || !colors_str || *colors_str == '\0')
+			return -EINVAL;
+
+		/* Parse zone numbers */
+		zones_ptr = zones_str;
+		grp->zone_mask = 0;
+		while ((token = strsep(&zones_ptr, ",")) != NULL) {
+			unsigned long zone_num;
+
+			if (kstrtoul(token, 10, &zone_num))
+				return -EINVAL;
+			if (zone_num >= ZONE_COUNT)
+				return -EINVAL;
+
+			grp->zone_mask |= (1 << zone_num);
+		}
+
+		if (grp->zone_mask == 0)
+			return -EINVAL;
+
+		/* Parse hex colors */
+		colors_ptr = colors_str;
+		grp->color_count = 0;
+		while ((token = strsep(&colors_ptr, ",")) != NULL) {
+			unsigned long rgb;
+
+			if (grp->color_count >= GRADIENT_MAX_COLORS)
+				return -EINVAL;
+
+			if (kstrtoul(token, 16, &rgb))
+				return -EINVAL;
+			if (rgb > 0xFFFFFF)
+				return -EINVAL;
+
+			grp->colors[grp->color_count].red = (rgb >> 16) & 0xFF;
+			grp->colors[grp->color_count].green = (rgb >> 8) & 0xFF;
+			grp->colors[grp->color_count].blue = rgb & 0xFF;
+			grp->color_count++;
+		}
+
+		if (grp->color_count == 0)
+			return -EINVAL;
+
+		g++;
+	}
+
+	new_cfg.group_count = g;
+
+	if (new_cfg.group_count == 0)
+		return -EINVAL;
+
+	/* Apply new config */
+	gradient_cfg = new_cfg;
+
+	/* Save state */
+	save_animation_state();
+
+	return count;
+}
+
 DEVICE_ATTR(brightness, 0644, brightness_show, brightness_set);
 DEVICE_ATTR(animation_mode, 0644, animation_mode_show, animation_mode_set);
 DEVICE_ATTR(animation_speed, 0644, animation_speed_show, animation_speed_set);
@@ -445,6 +637,7 @@ DEVICE_ATTR(animation_speed, 0644, animation_speed_show, animation_speed_set);
 struct device_attribute animation_brightness_attr = __ATTR(brightness, 0644, brightness_show, brightness_set);
 struct device_attribute animation_mode_attr = __ATTR(animation_mode, 0644, animation_mode_show, animation_mode_set);
 struct device_attribute animation_speed_attr = __ATTR(animation_speed, 0644, animation_speed_show, animation_speed_set);
+struct device_attribute gradient_config_attr = __ATTR(gradient_config, 0644, gradient_config_show, gradient_config_set);
 
 void animation_init(void)
 {

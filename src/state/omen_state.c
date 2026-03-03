@@ -32,6 +32,9 @@ void save_animation_state(void)
 	for (int i = 0; i < ZONE_COUNT; i++) {
 		state.colors[i] = original_colors[i].colors;
 	}
+
+	/* Copy gradient config */
+	state.gradient = gradient_cfg;
 	
 	/* 
 	 * Note: Directory /var/lib/omen-rgb-keyboard is created by install.sh
@@ -91,6 +94,9 @@ void load_animation_state(void)
 	for (int i = 0; i < ZONE_COUNT; i++) {
 		original_colors[i].colors = state.colors[i];
 	}
+
+	/* Restore gradient config */
+	gradient_cfg = state.gradient;
 	
 	pr_info("Animation state loaded: mode=%d, speed=%d, brightness=%d\n", 
 		current_animation, animation_speed, global_brightness);
