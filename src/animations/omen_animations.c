@@ -15,6 +15,7 @@
 #include <linux/jiffies.h>
 #include <linux/math.h>
 #include <linux/string.h>
+#include <linux/mutex.h>
 
 #include "omen_rgb_keyboard.h"
 #include "omen_wmi.h"
@@ -28,6 +29,7 @@ enum animation_mode current_animation = ANIMATION_STATIC;
 int animation_speed = ANIMATION_SPEED_DEFAULT;
 bool animation_active = false;
 struct gradient_config gradient_cfg;
+DEFINE_MUTEX(gradient_cfg_mutex);
 
 static struct timer_list animation_timer;
 static struct work_struct animation_work;
@@ -268,14 +270,20 @@ static void animation_gradient(void)
 	unsigned long elapsed = jiffies - animation_start_time;
 	unsigned long step_time = msecs_to_jiffies(3000 / animation_speed);
 	struct color_platform colors[ZONE_COUNT];
+	struct gradient_config cfg_snapshot;
 	int g, z;
+
+	/* Take a snapshot of the config under the lock */
+	mutex_lock(&gradient_cfg_mutex);
+	cfg_snapshot = gradient_cfg;
+	mutex_unlock(&gradient_cfg_mutex);
 
 	/* Start with current zone colors as fallback for ungrouped zones */
 	for (z = 0; z < ZONE_COUNT; z++)
 		colors[z] = original_colors[z].colors;
 
-	for (g = 0; g < gradient_cfg.group_count; g++) {
-		struct gradient_group *grp = &gradient_cfg.groups[g];
+	for (g = 0; g < cfg_snapshot.group_count; g++) {
+		struct gradient_group *grp = &cfg_snapshot.groups[g];
 		unsigned long total_cycle, cycle_pos, frac;
 		int idx_a, idx_b;
 		struct color_platform interpolated;
@@ -369,15 +377,15 @@ void animation_start(void)
 	animation_start_time = jiffies;
 	animation_active = true;
 
-	/* Start the timer */
-	timer_setup(&animation_timer, animation_timer_callback, 0);
+	/* Start the timer (already initialized in animation_init) */
 	mod_timer(&animation_timer, jiffies + msecs_to_jiffies(ANIMATION_TIMER_INTERVAL_MS));
 }
 
 void animation_stop(void)
 {
 	animation_active = false;
-	timer_delete(&animation_timer);
+	timer_delete_sync(&animation_timer);
+	cancel_work_sync(&animation_work);
 
 	/* Restore original colors */
 	for (int zone = 0; zone < ZONE_COUNT; zone++) {
@@ -492,41 +500,49 @@ static ssize_t animation_speed_set(struct device *dev, struct device_attribute *
 static ssize_t gradient_config_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
+	struct gradient_config cfg_snapshot;
 	int g, z, c, len = 0;
 
-	for (g = 0; g < gradient_cfg.group_count; g++) {
-		struct gradient_group *grp = &gradient_cfg.groups[g];
+	mutex_lock(&gradient_cfg_mutex);
+	cfg_snapshot = gradient_cfg;
+	mutex_unlock(&gradient_cfg_mutex);
+
+	for (g = 0; g < cfg_snapshot.group_count; g++) {
+		struct gradient_group *grp = &cfg_snapshot.groups[g];
 		bool first_zone = true;
 		bool first_color = true;
 
-		if (g > 0)
-			len += sprintf(buf + len, ";");
+		if (g > 0) {
+			if (len >= PAGE_SIZE - 1)
+				break;
+			len += scnprintf(buf + len, PAGE_SIZE - len, ";");
+		}
 
 		/* Print zones */
 		for (z = 0; z < ZONE_COUNT; z++) {
 			if (grp->zone_mask & (1 << z)) {
 				if (!first_zone)
-					len += sprintf(buf + len, ",");
-				len += sprintf(buf + len, "%d", z);
+					len += scnprintf(buf + len, PAGE_SIZE - len, ",");
+				len += scnprintf(buf + len, PAGE_SIZE - len, "%d", z);
 				first_zone = false;
 			}
 		}
 
-		len += sprintf(buf + len, ":");
+		len += scnprintf(buf + len, PAGE_SIZE - len, ":");
 
 		/* Print colors */
 		for (c = 0; c < grp->color_count; c++) {
 			if (!first_color)
-				len += sprintf(buf + len, ",");
-			len += sprintf(buf + len, "%02X%02X%02X",
-				       grp->colors[c].red,
-				       grp->colors[c].green,
-				       grp->colors[c].blue);
+				len += scnprintf(buf + len, PAGE_SIZE - len, ",");
+			len += scnprintf(buf + len, PAGE_SIZE - len, "%02X%02X%02X",
+					 grp->colors[c].red,
+					 grp->colors[c].green,
+					 grp->colors[c].blue);
 			first_color = false;
 		}
 	}
 
-	len += sprintf(buf + len, "\n");
+	len += scnprintf(buf + len, PAGE_SIZE - len, "\n");
 	return len;
 }
 
@@ -538,13 +554,15 @@ static ssize_t gradient_config_set(struct device *dev, struct device_attribute *
 	char *group_str, *groups_ptr;
 	int g = 0;
 
+	if (count == 0)
+		return -EINVAL;
+
 	memset(&new_cfg, 0, sizeof(new_cfg));
 
 	if (count >= sizeof(local_buf))
 		return -EINVAL;
 
-	memcpy(local_buf, buf, count);
-	local_buf[count] = '\0';
+	strscpy(local_buf, buf, count + 1);
 
 	/* Strip trailing newline */
 	if (local_buf[count - 1] == '\n')
@@ -621,18 +639,16 @@ static ssize_t gradient_config_set(struct device *dev, struct device_attribute *
 	if (new_cfg.group_count == 0)
 		return -EINVAL;
 
-	/* Apply new config */
+	/* Apply new config under lock */
+	mutex_lock(&gradient_cfg_mutex);
 	gradient_cfg = new_cfg;
+	mutex_unlock(&gradient_cfg_mutex);
 
 	/* Save state */
 	save_animation_state();
 
 	return count;
 }
-
-DEVICE_ATTR(brightness, 0644, brightness_show, brightness_set);
-DEVICE_ATTR(animation_mode, 0644, animation_mode_show, animation_mode_set);
-DEVICE_ATTR(animation_speed, 0644, animation_speed_show, animation_speed_set);
 
 struct device_attribute animation_brightness_attr = __ATTR(brightness, 0644, brightness_show, brightness_set);
 struct device_attribute animation_mode_attr = __ATTR(animation_mode, 0644, animation_mode_show, animation_mode_set);
@@ -642,6 +658,7 @@ struct device_attribute gradient_config_attr = __ATTR(gradient_config, 0644, gra
 void animation_init(void)
 {
 	INIT_WORK(&animation_work, animation_work_func);
+	timer_setup(&animation_timer, animation_timer_callback, 0);
 }
 
 void animation_cleanup(void)

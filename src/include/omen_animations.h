@@ -12,6 +12,7 @@
 
 #include <linux/device.h>
 #include <linux/types.h>
+#include <linux/mutex.h>
 
 #include "omen_zones.h"
 
@@ -56,6 +57,7 @@ extern enum animation_mode current_animation;
 extern int animation_speed;
 extern bool animation_active;
 extern struct gradient_config gradient_cfg;
+extern struct mutex gradient_cfg_mutex;
 
 /* Device attributes for sysfs */
 extern struct device_attribute animation_brightness_attr;

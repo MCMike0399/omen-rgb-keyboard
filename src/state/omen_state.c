@@ -34,7 +34,9 @@ void save_animation_state(void)
 	}
 
 	/* Copy gradient config */
+	mutex_lock(&gradient_cfg_mutex);
 	state.gradient = gradient_cfg;
+	mutex_unlock(&gradient_cfg_mutex);
 	
 	/* 
 	 * Note: Directory /var/lib/omen-rgb-keyboard is created by install.sh
@@ -95,8 +97,26 @@ void load_animation_state(void)
 		original_colors[i].colors = state.colors[i];
 	}
 
-	/* Restore gradient config */
-	gradient_cfg = state.gradient;
+	/* Restore gradient config (with validation) */
+	if (state.gradient.group_count <= GRADIENT_MAX_GROUPS) {
+		bool gradient_valid = true;
+		for (int i = 0; i < state.gradient.group_count; i++) {
+			if (state.gradient.groups[i].color_count > GRADIENT_MAX_COLORS) {
+				gradient_valid = false;
+				break;
+			}
+		}
+		if (gradient_valid) {
+			mutex_lock(&gradient_cfg_mutex);
+			gradient_cfg = state.gradient;
+			mutex_unlock(&gradient_cfg_mutex);
+		} else {
+			pr_warn("Saved gradient config has invalid color_count, skipping\n");
+		}
+	} else {
+		pr_warn("Saved gradient config has invalid group_count %d, skipping\n",
+			state.gradient.group_count);
+	}
 	
 	pr_info("Animation state loaded: mode=%d, speed=%d, brightness=%d\n", 
 		current_animation, animation_speed, global_brightness);
