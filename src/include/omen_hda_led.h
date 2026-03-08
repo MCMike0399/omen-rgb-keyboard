@@ -30,5 +30,16 @@ int omen_hda_led_init(void);
  */
 void omen_hda_led_cleanup(void);
 
+/**
+ * omen_hda_led_set_mute_state - Set mute state from userspace (e.g., PipeWire daemon)
+ * @muted: true if muted, false if unmuted
+ *
+ * This allows a userspace daemon to notify the kernel driver about mute state
+ * changes from PipeWire/Bluetooth devices that aren't accessible via ALSA.
+ *
+ * Returns: 0 on success, negative error code on failure
+ */
+int omen_hda_led_set_mute_state(bool muted);
+
 #endif /* OMEN_HDA_LED_H */
 

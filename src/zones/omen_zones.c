@@ -268,6 +268,32 @@ static ssize_t mute_led_set(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR(mute_led, 0644, mute_led_show, mute_led_set);
 
+static ssize_t mute_state_show(struct device *dev, struct device_attribute *attr,
+			       char *buf)
+{
+	return sprintf(buf, "Write '1' for muted, '0' for unmuted (from userspace daemon)\n");
+}
+
+static ssize_t mute_state_set(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	unsigned long value;
+	int ret;
+
+	ret = kstrtoul(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	/* Set mute state from userspace (e.g., PipeWire daemon) */
+	ret = omen_hda_led_set_mute_state(value ? true : false);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+static DEVICE_ATTR(mute_state, 0644, mute_state_show, mute_state_set);
+
 int fourzone_setup(struct platform_device *dev)
 {
 	u8 zone;
@@ -275,12 +301,12 @@ int fourzone_setup(struct platform_device *dev)
 	char *name;
 	int ret;
 
-	zone_dev_attrs = kcalloc(ZONE_COUNT + 5, sizeof(struct device_attribute),
+	zone_dev_attrs = kcalloc(ZONE_COUNT + 6, sizeof(struct device_attribute),
 				 GFP_KERNEL);
 	if (!zone_dev_attrs)
 		return -ENOMEM;
 
-	zone_attrs = kcalloc(ZONE_COUNT + 7, sizeof(struct attribute *),
+	zone_attrs = kcalloc(ZONE_COUNT + 8, sizeof(struct attribute *),
 			     GFP_KERNEL);
 	if (!zone_attrs) {
 		ret = -ENOMEM;
@@ -336,7 +362,8 @@ int fourzone_setup(struct platform_device *dev)
 	zone_attrs[ZONE_COUNT + 3] = &animation_speed_attr.attr;
 	zone_attrs[ZONE_COUNT + 4] = &gradient_config_attr.attr;
 	zone_attrs[ZONE_COUNT + 5] = &dev_attr_mute_led.attr;
-	zone_attrs[ZONE_COUNT + 6] = NULL; /* NULL terminate the array */
+	zone_attrs[ZONE_COUNT + 6] = &dev_attr_mute_state.attr;
+	zone_attrs[ZONE_COUNT + 7] = NULL; /* NULL terminate the array */
 
 	zone_attribute_group.attrs = zone_attrs;
 

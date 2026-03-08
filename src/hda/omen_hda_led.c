@@ -15,12 +15,10 @@
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/list.h>
-#include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <sound/core.h>
 #include <sound/hda_codec.h>
 #include <sound/hwdep.h>
-#include <sound/control.h>
 
 #include "omen_hda_led.h"
 
@@ -37,22 +35,14 @@
 #define DEFAULT_HDA_CODEC      0
 
 static struct hda_codec *omen_codec = NULL;
-static struct snd_card *omen_card = NULL;
 static bool led_auto_control = true; /* Enable automatic LED control based on mute */
-static struct snd_kcontrol *mute_control = NULL;
-static struct timer_list mute_check_timer;
-static struct work_struct mute_check_work;
-static bool last_mute_state = false;
+static bool external_mute_state = false;
+static bool use_external_mute = false;
 static struct delayed_work codec_retry_work;
 static int codec_retry_count = 0;
 #define MAX_CODEC_RETRIES 20
 #define CODEC_RETRY_DELAY_MS 5000  /* 5 seconds */
 
-/* Check mute state every 200ms */
-#define MUTE_CHECK_INTERVAL_MS 200
-
-/* Forward declarations */
-static void omen_register_volume_monitor(void);
 
 /**
  * find_hda_codec_by_card_number - Find HDA codec by searching through devices
@@ -233,7 +223,7 @@ static int omen_hda_led_set_internal(bool on)
 		return ret;
 	}
 
-	pr_debug("Mute LED turned %s\n", on ? "on" : "off");
+	pr_info("Mute LED turned %s\n", on ? "ON" : "OFF");
 	return 0;
 }
 
@@ -250,85 +240,15 @@ static int omen_hda_led_set_internal(bool on)
 int omen_hda_led_set(bool on)
 {
 	int ret;
-	
-	/* Disable auto control when manually setting LED */
-	led_auto_control = false;
-	
+		
 	ret = omen_hda_led_set_internal(on);
 	if (ret == 0) {
-		pr_info("Mute LED turned %s (auto-control disabled)\n", on ? "on" : "off");
+		pr_debug("Mute LED turned %s (manual override)\n", on ? "on" : "off");
 	}
 	
 	return ret;
 }
 
-/**
- * check_mute_state - Check current mute state
- *
- * Returns: true if muted, false if unmuted
- */
-static bool check_mute_state(void)
-{
-	struct snd_ctl_elem_value *ucontrol;
-	bool is_muted = false;
-
-	if (!mute_control)
-		return false;
-
-	ucontrol = kzalloc(sizeof(*ucontrol), GFP_KERNEL);
-	if (!ucontrol)
-		return false;
-
-	/* Get current mute state */
-	if (mute_control->get(mute_control, ucontrol) == 0) {
-		/* value.integer.value[0] == 0 means muted for most controls */
-		if (ucontrol->value.integer.value[0] == 0) {
-			is_muted = true;
-		}
-	}
-
-	kfree(ucontrol);
-	return is_muted;
-}
-
-/**
- * mute_check_work_handler - Work queue handler for mute state checking
- * @work: Work structure
- *
- * Checks mute state and updates LED if changed
- */
-static void mute_check_work_handler(struct work_struct *work)
-{
-	bool current_mute_state;
-
-	if (!led_auto_control || !omen_codec || !mute_control)
-		return;
-
-	current_mute_state = check_mute_state();
-
-	/* Update LED only if state changed */
-	if (current_mute_state != last_mute_state) {
-		omen_hda_led_set_internal(current_mute_state);
-		last_mute_state = current_mute_state;
-	}
-}
-
-/**
- * mute_check_timer_callback - Timer callback for periodic mute checking
- * @t: Timer structure
- *
- * Schedules work to check mute state
- */
-static void mute_check_timer_callback(struct timer_list *t)
-{
-	/* Schedule work to check mute state */
-	schedule_work(&mute_check_work);
-
-	/* Re-arm timer for next check */
-	if (led_auto_control) {
-		mod_timer(&mute_check_timer, jiffies + msecs_to_jiffies(MUTE_CHECK_INTERVAL_MS));
-	}
-}
 
 /**
  * codec_retry_work_handler - Delayed work handler for retrying codec discovery
@@ -338,9 +258,6 @@ static void mute_check_timer_callback(struct timer_list *t)
  */
 static void codec_retry_work_handler(struct work_struct *work)
 {
-	struct snd_card *card;
-	int card_num;
-
 	codec_retry_count++;
 
 	pr_debug("Retry attempt %d/%d: searching for HDA codec\n",
@@ -351,22 +268,14 @@ static void codec_retry_work_handler(struct work_struct *work)
 
 	if (omen_codec) {
 		pr_info("HDA codec found on retry attempt %d\n", codec_retry_count);
-
-		/* Get the card number from the codec */
-		if (omen_codec->card) {
-			card_num = omen_codec->card->number;
-			pr_info("Using sound card %d for LED control\n", card_num);
-			
-			/* Keep reference to the card for volume monitoring */
-			card = snd_card_ref(card_num);
-			if (card) {
-				omen_card = card;
-				/* Register volume monitoring */
-				omen_register_volume_monitor();
-			}
-		}
-
 		pr_info("HDA LED control initialized successfully (after retry)\n");
+		pr_info("Mute LED will be controlled via userspace daemon (PipeWire/Bluetooth)\n");
+		
+		/* Initialize LED to off (unmuted) - userspace daemon will set correct state */
+		if (led_auto_control && omen_codec) {
+			omen_hda_led_set_internal(false);
+		}
+		
 		codec_retry_count = 0; /* Reset counter */
 		return;
 	}
@@ -385,58 +294,6 @@ static void codec_retry_work_handler(struct work_struct *work)
 	}
 }
 
-/**
- * omen_register_volume_monitor - Register volume change monitoring
- *
- * Sets up monitoring of volume/mute controls to auto-update LED
- */
-static void omen_register_volume_monitor(void)
-{
-	struct snd_kcontrol *kctl;
-	const char *control_names[] = {
-		"Master Playback Switch",
-		"Speaker Playback Switch",
-		"Headphone Playback Switch",
-		"PCM Playback Switch",
-		NULL
-	};
-	int i;
-
-	if (!omen_card)
-		return;
-
-
-	/* Try to find a mute control */
-	for (i = 0; control_names[i]; i++) {
-		struct snd_ctl_elem_id id = {0};
-		
-		id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-		strncpy(id.name, control_names[i], sizeof(id.name) - 1);
-		
-		kctl = snd_ctl_find_id(omen_card, &id);
-		if (kctl) {
-			pr_info("Found control: %s - using for LED monitoring\n", control_names[i]);
-			mute_control = kctl;
-			break;
-		}
-	}
-	
-	if (mute_control) {
-		/* Initialize work queue */
-		INIT_WORK(&mute_check_work, mute_check_work_handler);
-		
-		/* Initialize and start timer */
-		timer_setup(&mute_check_timer, mute_check_timer_callback, 0);
-		mod_timer(&mute_check_timer, jiffies + msecs_to_jiffies(MUTE_CHECK_INTERVAL_MS));
-		
-		/* Check initial state */
-		last_mute_state = check_mute_state();
-		omen_hda_led_set_internal(last_mute_state);
-		
-	} else {
-		pr_warn("No mute control found, auto LED control disabled\n");
-	}
-}
 
 /**
  * omen_hda_led_init - Initialize HDA LED control
@@ -447,9 +304,6 @@ static void omen_register_volume_monitor(void)
  */
 int omen_hda_led_init(void)
 {
-	struct snd_card *card;
-	int card_num;
-	
 	pr_debug("Initializing HDA LED control\n");
 	
 	/* Try to find the codec on card 1, device 0 (matches hwC1D0) */
@@ -477,24 +331,14 @@ int omen_hda_led_init(void)
 		}
 	}
 
-	/* Get the card number from the codec */
-	if (omen_codec && omen_codec->card) {
-		card_num = omen_codec->card->number;
-		pr_info("Using sound card %d for LED control\n", card_num);
-		
-		/* Keep reference to the card for volume monitoring */
-		card = snd_card_ref(card_num);
-		if (card) {
-			omen_card = card;
-			/* Register volume monitoring */
-			omen_register_volume_monitor();
-		}
-	} else {
-		pr_warn("Codec found but card reference invalid\n");
-		return -ENODEV;
-	}
-
 	pr_info("HDA LED control initialized successfully\n");
+	pr_info("Mute LED will be controlled via userspace daemon (PipeWire/Bluetooth)\n");
+	
+	/* Initialize LED to off (unmuted) - userspace daemon will set correct state */
+	if (led_auto_control && omen_codec) {
+		omen_hda_led_set_internal(false);
+	}
+	
 	return 0;
 }
 
@@ -505,27 +349,15 @@ int omen_hda_led_init(void)
  */
 void omen_hda_led_cleanup(void)
 {
-	/* Disable auto control and stop timer */
+	/* Disable auto control */
 	led_auto_control = false;
 	
 	cancel_delayed_work_sync(&codec_retry_work);
 	codec_retry_count = 0;
 	
-	if (mute_control) {
-		timer_delete_sync(&mute_check_timer);
-		cancel_work_sync(&mute_check_work);
-		mute_control = NULL;
-	}
-	
 	/* Turn off LED before cleanup */
 	if (omen_codec) {
 		omen_hda_led_set_internal(false);
-	}
-	
-	/* Release card reference from volume monitoring */
-	if (omen_card) {
-		snd_card_unref(omen_card);
-		omen_card = NULL;
 	}
 	
 	if (omen_codec) {
@@ -535,4 +367,31 @@ void omen_hda_led_cleanup(void)
 		omen_codec = NULL;
 		pr_info("HDA LED control cleaned up\n");
 	}
+}
+
+/**
+ * omen_hda_led_set_mute_state - Set mute state from userspace
+ * @muted: true if muted, false if unmuted
+ *
+ * Allows userspace daemon (e.g., PipeWire monitor) to notify kernel
+ * about mute state changes. When this is used, ALSA control checking
+ * is bypassed in favor of the external state.
+ *
+ * Returns: 0 on success
+ */
+int omen_hda_led_set_mute_state(bool muted)
+{
+	external_mute_state = muted;
+	use_external_mute = true;
+	
+	/* Immediately update LED if auto-control is enabled */
+	if (led_auto_control && omen_codec) {
+		pr_info("Setting mute LED to %s (from userspace)\n", muted ? "ON" : "OFF");
+		omen_hda_led_set_internal(muted);
+	} else {
+		pr_warn("Cannot set LED: auto_control=%d, codec=%p\n", 
+			led_auto_control, omen_codec);
+	}
+	
+	return 0;
 }

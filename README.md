@@ -165,16 +165,43 @@ echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/brightness
 
 The mute button LED is **automatically synchronized** with your system's mute state (polls every 200ms). When you mute audio, the LED turns on; when unmuted, it turns off.
 
-You can also manually control it:
+**For HDA/ALSA audio devices:**
+The driver automatically monitors ALSA controls (Master, Speaker, Headphone, PCM) and syncs the LED.
+
+**For PipeWire/Bluetooth devices:**
+If you're using PipeWire or Bluetooth headphones, the mute monitor service is installed and enabled automatically.
+
+**Check service status:**
+```bash
+# Check if service is running
+systemctl --user status omen-mute-monitor.service
+
+# View service logs
+journalctl --user -u omen-mute-monitor.service -f
+
+# Check if service is enabled
+systemctl --user is-enabled omen-mute-monitor.service
+
+# Restart service if needed
+systemctl --user restart omen-mute-monitor.service
+```
+
+The service monitors PipeWire mute state using `wpctl` and notifies the kernel driver via sysfs. It runs as your user (for PipeWire access) and uses sudo only for sysfs writes if needed.
+
+**Manual Control:**
 ```bash
 # Manually turn mute button LED on (disables auto-sync)
 echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
 
 # Manually turn mute button LED off
 echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_led
+
+# Set mute state from userspace (for PipeWire/Bluetooth)
+echo "1" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state  # Muted
+echo "0" | sudo tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/mute_state  # Unmuted
 ```
 
-**Note**: Manual control disables automatic synchronization until the driver is reloaded.
+**Note**: Manual control via `mute_led` disables automatic synchronization until the driver is reloaded.
 
 #### Reading Current Values
 ```bash
