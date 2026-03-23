@@ -28,7 +28,7 @@ chmod 644 /etc/udev/rules.d/99-omen-rgb-keyboard.rules
 # Reload udev rules
 echo "Reloading udev rules..."
 udevadm control --reload-rules
-udevadm trigger
+udevadm trigger --subsystem-match=platform --attr-match=driver=omen-rgb-keyboard
 
 # Add user to input group if not already a member
 if ! groups "$REAL_USER" | grep -q "\binput\b"; then

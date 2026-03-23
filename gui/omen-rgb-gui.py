@@ -270,8 +270,8 @@ class OmenRGBGui(QWidget):
             errors.append("brightness")
 
         # Apply animation mode
-        mode_idx = self.anim_combo.currentIndex()
-        if not sysfs_write("animation_mode", str(mode_idx)):
+        mode_name = self.anim_combo.currentText()
+        if not sysfs_write("animation_mode", mode_name):
             errors.append("animation_mode")
 
         # Apply animation speed
