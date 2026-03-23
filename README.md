@@ -113,6 +113,44 @@ echo "rainbow" | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation
 echo "5" | tee /sys/devices/platform/omen-rgb-keyboard/rgb_zones/animation_speed
 ```
 
+## GUI
+
+A graphical interface is included for easy RGB control without the command line.
+
+### Prerequisites
+
+```bash
+# Arch Linux / CachyOS
+sudo pacman -S python-pyqt6
+
+# Fedora
+sudo dnf install python3-pyqt6
+
+# Ubuntu/Debian
+sudo apt install python3-pyqt6
+```
+
+### Install & Launch
+
+```bash
+# Install GUI and desktop entry
+./gui/install-gui.sh
+
+# Or run directly
+python3 gui/omen-rgb-gui.py
+```
+
+The GUI provides:
+- **4-zone color pickers** — click each zone to open a native RGB color dialog
+- **Set All Zones** — apply one color to the entire keyboard
+- **Brightness slider** (0-100%)
+- **Animation mode** selector (all 11 modes)
+- **Animation speed** slider (1-10)
+- **Reload** button to read current hardware state
+
+> [!NOTE]
+> The GUI requires the udev rules to be installed (see [Non-Root Access](#non-root-access-optional)) or must be run as root.
+
 ## Usage
 
 ### Loading the Module

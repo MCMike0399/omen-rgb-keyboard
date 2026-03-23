@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=OMEN RGB Keyboard
+Comment=Configure HP OMEN 4-zone RGB keyboard colors
+Exec=python3 /usr/share/omen-rgb-keyboard/gui/omen-rgb-gui.py
+Icon=preferences-desktop-keyboard
+Type=Application
+Categories=Settings;HardwareSettings;
+Keywords=keyboard;rgb;led;omen;hp;
